@@ -1,18 +1,30 @@
 import sys
+import os
 import re
 import ctypes
 from ctypes import wintypes
+import traceback
+
+# Bật hỗ trợ DPI trên Windows để giao diện hiển thị sắc nét
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    pass
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, 
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
-    QScrollArea, QComboBox, QFrame
+    QScrollArea, QComboBox, QFrame, QMessageBox
 )
 from PyQt5.QtCore import Qt, QTimer
 import win32gui
 import win32con
 
-# Khai báo Windows DWM Thumbnail API
-dwmapi = ctypes.WinDLL("dwmapi")
+# Nạp thư viện DWM của Windows
+try:
+    dwmapi = ctypes.WinDLL("dwmapi")
+except Exception as e:
+    dwmapi = None
 
 class RECT(ctypes.Structure):
     _fields_ = [
@@ -38,7 +50,6 @@ DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010
 
 
 class ThumbnailCard(QFrame):
-    """Khung chứa tiêu đề và vùng chiếu hình thu nhỏ của cửa sổ game"""
     def __init__(self, hwnd, title, index, thumb_w, thumb_h, parent=None):
         super().__init__(parent)
         self.hwnd = hwnd
@@ -64,7 +75,6 @@ class ThumbnailCard(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
 
-        # Thanh tiêu đề hiển thị tên cửa sổ
         self.header_label = QLabel(f" {self.game_title} ")
         self.header_label.setFixedHeight(22)
         self.header_label.setStyleSheet("""
@@ -76,10 +86,9 @@ class ThumbnailCard(QFrame):
         """)
         layout.addWidget(self.header_label)
 
-        # Vùng chứa DWM thumbnail
         self.thumb_area = QWidget()
         self.thumb_area.setFixedSize(self.thumb_w, self.thumb_h)
-        self.thumb_area.setStyleSheet("background-color: #0b0b0e;")
+        self.thumb_area.setStyleSheet("background-color: #000000;")
         layout.addWidget(self.thumb_area)
 
     def set_display_size(self, width, height):
@@ -93,41 +102,63 @@ class ThumbnailCard(QFrame):
         self.register_thumbnail()
 
     def register_thumbnail(self):
+        if not dwmapi:
+            return
         if not self.thumb_id:
-            dest_hwnd = int(self.thumb_area.winId())
-            hr = dwmapi.DwmRegisterThumbnail(dest_hwnd, self.hwnd, ctypes.byref(self.thumb_id))
-            if hr == 0:
-                self.update_thumbnail_position()
+            try:
+                dest_hwnd = int(self.thumb_area.winId())
+                hr = dwmapi.DwmRegisterThumbnail(dest_hwnd, self.hwnd, ctypes.byref(self.thumb_id))
+                if hr == 0:
+                    self.update_thumbnail_position()
+            except Exception:
+                pass
 
     def update_thumbnail_position(self):
-        if self.thumb_id:
-            props = DWM_THUMBNAIL_PROPERTIES()
-            props.dwFlags = DWM_TNP_RECTTARGET | DWM_TNP_VISIBLE | DWM_TNP_SOURCECLIENTAREAONLY
-            props.fVisible = True
-            props.fSourceClientAreaOnly = True
-            props.rcTarget = RECT(0, 0, self.thumb_w, self.thumb_h)
-            dwmapi.DwmUpdateThumbnailProperties(self.thumb_id, ctypes.byref(props))
+        if dwmapi and self.thumb_id:
+            try:
+                props = DWM_THUMBNAIL_PROPERTIES()
+                props.dwFlags = DWM_TNP_RECTTARGET | DWM_TNP_VISIBLE | DWM_TNP_SOURCECLIENTAREAONLY
+                props.fVisible = True
+                props.fSourceClientAreaOnly = True
+                props.rcTarget = RECT(0, 0, self.thumb_w, self.thumb_h)
+                dwmapi.DwmUpdateThumbnailProperties(self.thumb_id, ctypes.byref(props))
+            except Exception:
+                pass
 
     def mouseDoubleClickEvent(self, event):
-        """Kích hoạt và đưa cửa sổ game thật lên trước khi click đúp"""
         if event.button() == Qt.LeftButton:
             self.activate_window()
 
     def activate_window(self):
-        if win32gui.IsWindow(self.hwnd):
-            # Khôi phục nếu cửa sổ đang bị Minimize
-            win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-            # Cho phép và kích hoạt đưa lên foreground
-            ctypes.windll.user32.AllowSetForegroundWindow(ctypes.c_uint(-1))
-            win32gui.SetForegroundWindow(self.hwnd)
+        try:
+            if win32gui.IsWindow(self.hwnd):
+                win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+                
+                # Cách kích hoạt cửa sổ an toàn trên Windows 10/11
+                user32 = ctypes.windll.user32
+                current_thread = ctypes.windll.kernel32.GetCurrentThreadId()
+                window_thread = user32.GetWindowThreadProcessId(self.hwnd, None)
+                
+                user32.AttachThreadInput(current_thread, window_thread, True)
+                win32gui.SetForegroundWindow(self.hwnd)
+                win32gui.BringWindowToTop(self.hwnd)
+                user32.AttachThreadInput(current_thread, window_thread, False)
+        except Exception:
+            try:
+                win32gui.SetForegroundWindow(self.hwnd)
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         self.unregister_thumbnail()
         super().closeEvent(event)
 
     def unregister_thumbnail(self):
-        if self.thumb_id:
-            dwmapi.DwmUnregisterThumbnail(self.thumb_id)
+        if dwmapi and self.thumb_id:
+            try:
+                dwmapi.DwmUnregisterThumbnail(self.thumb_id)
+            except Exception:
+                pass
             self.thumb_id = None
 
 
@@ -135,10 +166,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mir4 Window Wall Manager [Mir4G 1-50]")
-        self.resize(1300, 750)
+        self.resize(1280, 720)
         self.setStyleSheet("background-color: #121214; color: #ececed;")
 
-        # Thiết lập mặc định: 320x180 (16:9) và 4 cột
         self.current_w = 320
         self.current_h = 180
         self.current_cols = 4
@@ -146,12 +176,10 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
 
-        # Tự động quét lại cửa sổ mỗi 5 giây
         self.auto_refresh_timer = QTimer(self)
         self.auto_refresh_timer.timeout.connect(self.scan_windows)
-        self.auto_refresh_timer.start(5000)
+        self.auto_refresh_timer.start(4000)
 
-        # Quét lần đầu
         self.scan_windows()
 
     def init_ui(self):
@@ -161,7 +189,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
-        # Toolbar
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
 
@@ -177,8 +204,6 @@ class MainWindow(QMainWindow):
         self.refresh_btn.clicked.connect(self.scan_windows)
         toolbar.addWidget(self.refresh_btn)
 
-        # Tùy chọn độ phân giải
         toolbar.addWidget(QLabel("Độ phân giải:"))
         self.res_combo = QComboBox()
         self.res_combo.setFixedHeight(30)
-        self
