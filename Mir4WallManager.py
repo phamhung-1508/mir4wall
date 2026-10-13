@@ -1,20 +1,13 @@
 import sys
-import os
 import re
 import ctypes
 from ctypes import wintypes
 import traceback
 
-# Bật hỗ trợ DPI trên Windows để giao diện hiển thị sắc nét
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    pass
-
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, 
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
-    QScrollArea, QComboBox, QFrame, QMessageBox
+    QScrollArea, QComboBox, QFrame
 )
 from PyQt5.QtCore import Qt, QTimer
 import win32gui
@@ -23,7 +16,7 @@ import win32con
 # Nạp thư viện DWM của Windows
 try:
     dwmapi = ctypes.WinDLL("dwmapi")
-except Exception as e:
+except Exception:
     dwmapi = None
 
 class RECT(ctypes.Structure):
@@ -102,16 +95,15 @@ class ThumbnailCard(QFrame):
         self.register_thumbnail()
 
     def register_thumbnail(self):
-        if not dwmapi:
+        if not dwmapi or self.thumb_id:
             return
-        if not self.thumb_id:
-            try:
-                dest_hwnd = int(self.thumb_area.winId())
-                hr = dwmapi.DwmRegisterThumbnail(dest_hwnd, self.hwnd, ctypes.byref(self.thumb_id))
-                if hr == 0:
-                    self.update_thumbnail_position()
-            except Exception:
-                pass
+        try:
+            dest_hwnd = int(self.thumb_area.winId())
+            hr = dwmapi.DwmRegisterThumbnail(dest_hwnd, self.hwnd, ctypes.byref(self.thumb_id))
+            if hr == 0:
+                self.update_thumbnail_position()
+        except Exception:
+            pass
 
     def update_thumbnail_position(self):
         if dwmapi and self.thumb_id:
@@ -133,12 +125,9 @@ class ThumbnailCard(QFrame):
         try:
             if win32gui.IsWindow(self.hwnd):
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-                
-                # Cách kích hoạt cửa sổ an toàn trên Windows 10/11
                 user32 = ctypes.windll.user32
                 current_thread = ctypes.windll.kernel32.GetCurrentThreadId()
                 window_thread = user32.GetWindowThreadProcessId(self.hwnd, None)
-                
                 user32.AttachThreadInput(current_thread, window_thread, True)
                 win32gui.SetForegroundWindow(self.hwnd)
                 win32gui.BringWindowToTop(self.hwnd)
@@ -207,6 +196,114 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(QLabel("Độ phân giải:"))
         self.res_combo = QComboBox()
         self.res_combo.setFixedHeight(30)
+        self.res_combo.setStyleSheet("background-color: #242429; color: white; border-radius: 4px; padding: 2px 8px;")
+        self.res_options = {
+            "Rất nhỏ (240x135)": (240, 135),
+            "Tiêu chuẩn (320x180)": (320, 180),
+            "Trung bình (400x225)": (400, 225),
+            "Lớn (480x270)": (480, 270),
+            "Rất lớn (640x360)": (640, 360)
+        }
+        for label in self.res_options.keys():
+            self.res_combo.addItem(label)
+        self.res_combo.setCurrentText("Tiêu chuẩn (320x180)")
+        self.res_combo.currentIndexChanged.connect(self.on_resolution_change)
+        toolbar.addWidget(self.res_combo)
+
+        toolbar.addWidget(QLabel("Số cột:"))
+        self.col_combo = QComboBox()
+        self.col_combo.setFixedHeight(30)
+        self.col_combo.setStyleSheet("background-color: #242429; color: white; border-radius: 4px; padding: 2px 8px;")
+        for c in range(2, 9):
+            self.col_combo.addItem(f"{c} Cột", c)
+        self.col_combo.setCurrentIndex(2)
+        self.col_combo.currentIndexChanged.connect(self.on_columns_change)
+        toolbar.addWidget(self.col_combo)
+
+        toolbar.addStretch()
+
+        self.status_label = QLabel("Đang chờ quét...")
+        self.status_label.setStyleSheet("color: #00e676; font-weight: bold;")
+        toolbar.addWidget(self.status_label)
+
+        main_layout.addLayout(toolbar)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { border: 1px solid #292930; background-color: #121214; }")
+
+        self.scroll_widget = QWidget()
+        self.grid_layout = QGridLayout(self.scroll_widget)
+        self.grid_layout.setContentsMargins(10, 10, 10, 10)
+        self.grid_layout.setSpacing(10)
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+
+        self.scroll_area.setWidget(self.scroll_widget)
+        main_layout.addWidget(self.scroll_area)
+
+    def on_resolution_change(self):
+        text = self.res_combo.currentText()
+        w, h = self.res_options[text]
+        self.current_w, self.current_h = w, h
+        for card in self.cards.values():
+            card.set_display_size(w, h)
+
+    def on_columns_change(self):
+        self.current_cols = self.col_combo.currentData()
+        self.relayout_cards()
+
+    def relayout_cards(self):
+        sorted_cards = sorted(self.cards.values(), key=lambda card: card.index)
+        for idx, card in enumerate(sorted_cards):
+            r = idx // self.current_cols
+            c = idx % self.current_cols
+            self.grid_layout.addWidget(card, r, c)
+
+    def scan_windows(self):
+        found_windows = []
+        pattern = re.compile(r"^mir4g\[(\d+)\]", re.IGNORECASE)
+
+        def enum_cb(hwnd, extra):
+            try:
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd).strip()
+                    match = pattern.match(title)
+                    if match:
+                        idx = int(match.group(1))
+                        if 1 <= idx <= 50:
+                            found_windows.append((idx, hwnd, title))
+            except Exception:
+                pass
+            return True
+
+        try:
+            win32gui.EnumWindows(enum_cb, None)
+        except Exception:
+            pass
+
+        found_windows.sort(key=lambda x: x[0])
+        current_hwnds = {hwnd for _, hwnd, _ in found_windows}
+
+        for hwnd in list(self.cards.keys()):
+            if hwnd not in current_hwnds:
+                card = self.cards.pop(hwnd)
+                card.unregister_thumbnail()
+                card.setParent(None)
+                card.deleteLater()
+
+        needs_relayout = False
+        for idx, hwnd, title in found_windows:
+            if hwnd not in self.cards:
+                card = ThumbnailCard(hwnd, title, idx, self.current_w, self.current_h)
+                self.cards[hwnd] = card
+                needs_relayout = True
+
+        if needs_relayout or len(self.cards) != self.grid_layout.count():
+            self.relayout_cards()
+
+        self.status_label.setText(f"Tìm thấy: {len(self.cards)} / 50 cửa sổ")
+
+
 if __name__ == "__main__":
     try:
         app = QApplication(sys.argv)
@@ -214,7 +311,6 @@ if __name__ == "__main__":
         window.show()
         sys.exit(app.exec_())
     except Exception as e:
-        import traceback
         print("\n=== CO LOI XAY RA KHI KHOI DONG ===")
         traceback.print_exc()
         input("\nNhan phim Enter de thoat...")
