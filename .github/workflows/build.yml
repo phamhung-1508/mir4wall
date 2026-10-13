@@ -1,0 +1,32 @@
+name: Build Mir4 Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Cai dat Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Cai dat thu vien
+      run: |
+        python -m pip install --upgrade pip
+        pip install PyQt5 pywin32 pyinstaller
+
+    - name: Dong goi thanh file EXE
+      run: |
+        pyinstaller --noconsole --onefile --uac-admin Mir4WallManager.py
+
+    - name: Luu file EXE de tai ve
+      uses: actions/upload-artifact@v4
+      with:
+        name: Mir4WallManager-EXE
+        path: dist/Mir4WallManager.exe
