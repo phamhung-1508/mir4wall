@@ -1,4 +1,5 @@
 import sys
+import os
 import re
 import ctypes
 from ctypes import wintypes
@@ -21,11 +22,11 @@ from PyQt5.QtWidgets import (
     QScrollArea, QComboBox, QFrame, QSlider, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QTimer, QRect
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, QIcon
 
 
 def capture_window_pixmap(hwnd, target_w, target_h):
-    """Chụp trực tiếp bộ đệm đồ họa và co giãn đúng tỉ lệ chuẩn 640x360 (16:9)"""
+    """Chụp trực tiếp bộ đệm đồ họa và co giãn đúng tỉ lệ chuẩn 640x360"""
     try:
         if not win32gui.IsWindow(hwnd):
             return None
@@ -60,14 +61,13 @@ def capture_window_pixmap(hwnd, target_w, target_h):
         win32gui.ReleaseDC(hwnd, hwndDC)
 
         pixmap = QPixmap.fromImage(img)
-        # Giữ chuẩn tỉ lệ gốc 640x360, không kéo méo ảnh
         return pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.FastTransformation)
     except Exception:
         return None
 
 
 class ThumbnailCard(QFrame):
-    """Card hiển thị từng cửa sổ game"""
+    """Card hiển thị trực tiếp toàn bộ màn hình game"""
     def __init__(self, hwnd, title, index, parent=None):
         super().__init__(parent)
         self.hwnd = hwnd
@@ -79,9 +79,9 @@ class ThumbnailCard(QFrame):
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet("""
             ThumbnailCard {
-                background-color: #1a1a1e;
+                background-color: #000000;
                 border: 2px solid #38383e;
-                border-radius: 6px;
+                border-radius: 4px;
             }
             ThumbnailCard:hover {
                 border: 2px solid #ff7b00;
@@ -89,33 +89,19 @@ class ThumbnailCard(QFrame):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # Tiêu đề trên thẻ
-        self.header_label = QLabel(f" {self.game_title} ")
-        self.header_label.setFixedHeight(22)
-        self.header_label.setStyleSheet("""
-            color: #ffffff;
-            font-weight: bold;
-            font-size: 11px;
-            background-color: #2b2b36;
-            border-radius: 3px;
-        """)
-        layout.addWidget(self.header_label)
-
-        # Khung chứa hình ảnh game
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setStyleSheet("background-color: #000000; border-radius: 2px;")
+        self.image_label.setStyleSheet("background-color: #000000; border: none;")
         layout.addWidget(self.image_label)
 
     def set_card_size(self, width, height):
         self.target_w = width
         self.target_h = height
         self.image_label.setFixedSize(self.target_w, self.target_h)
-        # Chiều cao tổng của card = chiều cao khung ảnh (tỉ lệ 640x360) + phần tiêu đề + padding
-        self.setFixedSize(self.target_w + 8, self.target_h + 30)
+        self.setFixedSize(self.target_w + 4, self.target_h + 4)
 
     def refresh_screen(self):
         pixmap = capture_window_pixmap(self.hwnd, self.target_w, self.target_h)
@@ -152,15 +138,21 @@ class MainWindow(QMainWindow):
         self.resize(1340, 800)
         self.setStyleSheet("background-color: #121214; color: #ececed;")
 
+        if os.path.exists("app_icon.ico"):
+            self.setWindowIcon(QIcon("app_icon.ico"))
+
         self.current_cols = 4
         self.cards = {}
+        self.auto_scale = True
+        self.fixed_w = 320
+        self.fixed_h = 180
 
         self.init_ui()
 
-        # Timer vẽ hình ảnh
+        # Timer cập nhật khung hình (Mặc định 30 FPS)
         self.render_timer = QTimer(self)
         self.render_timer.timeout.connect(self.update_frames)
-        self.render_timer.start(100)  # Mặc định 10 FPS (100ms)
+        self.render_timer.start(33)
 
         # Timer quét phát hiện game mới mở/đóng
         self.scan_timer = QTimer(self)
@@ -176,11 +168,10 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
-        # ==================== THANH CÔNG CỤ (TOOLBAR) ====================
+        # ==================== THANH CÔNG CỤ ====================
         toolbar = QHBoxLayout()
         toolbar.setSpacing(12)
 
-        # Nút Làm mới
         self.refresh_btn = QPushButton("Làm mới ngay (F5)")
         self.refresh_btn.setFixedHeight(32)
         self.refresh_btn.setStyleSheet("""
@@ -193,7 +184,26 @@ class MainWindow(QMainWindow):
         self.refresh_btn.clicked.connect(self.scan_windows)
         toolbar.addWidget(self.refresh_btn)
 
-        # Chọn Số cột
+        # Lựa chọn Độ phân giải (Khôi phục lại trọn vẹn)
+        toolbar.addWidget(QLabel("Độ phân giải:"))
+        self.res_combo = QComboBox()
+        self.res_combo.setFixedHeight(30)
+        self.res_combo.setStyleSheet("background-color: #242429; color: white; border-radius: 4px; padding: 2px 8px;")
+        self.res_options = {
+            "Tự động (Co giãn theo App)": None,
+            "Rất nhỏ (240x135)": (240, 135),
+            "Tiêu chuẩn (320x180)": (320, 180),
+            "Trung bình (400x225)": (400, 225),
+            "Lớn (480x270)": (480, 270),
+            "Gốc chuẩn (640x360)": (640, 360)
+        }
+        for label in self.res_options.keys():
+            self.res_combo.addItem(label)
+        self.res_combo.setCurrentText("Tự động (Co giãn theo App)")
+        self.res_combo.currentIndexChanged.connect(self.on_resolution_change)
+        toolbar.addWidget(self.res_combo)
+
+        # Lựa chọn Số cột
         toolbar.addWidget(QLabel("Số cột:"))
         self.col_combo = QComboBox()
         self.col_combo.setFixedHeight(30)
@@ -204,11 +214,11 @@ class MainWindow(QMainWindow):
         self.col_combo.currentIndexChanged.connect(self.on_columns_change)
         toolbar.addWidget(self.col_combo)
 
-        # THANH KÉO ĐIỀU CHỈNH FPS
+        # Thanh trượt điều chỉnh FPS (0 - 60 FPS)
         toolbar.addWidget(QLabel("Tốc độ FPS:"))
         self.fps_slider = QSlider(Qt.Horizontal)
-        self.fps_slider.setRange(1, 30)
-        self.fps_slider.setValue(10)
+        self.fps_slider.setRange(0, 60)
+        self.fps_slider.setValue(30)
         self.fps_slider.setFixedWidth(160)
         self.fps_slider.setStyleSheet("""
             QSlider::groove:horizontal {
@@ -232,8 +242,8 @@ class MainWindow(QMainWindow):
         self.fps_slider.valueChanged.connect(self.on_fps_slider_changed)
         toolbar.addWidget(self.fps_slider)
 
-        self.fps_value_label = QLabel("10 FPS")
-        self.fps_value_label.setStyleSheet("color: #ffaa00; font-weight: bold; min-width: 45px;")
+        self.fps_value_label = QLabel("30 FPS")
+        self.fps_value_label.setStyleSheet("color: #ffaa00; font-weight: bold; min-width: 80px;")
         toolbar.addWidget(self.fps_value_label)
 
         toolbar.addStretch()
@@ -251,9 +261,8 @@ class MainWindow(QMainWindow):
 
         self.scroll_widget = QWidget()
         self.grid_layout = QGridLayout(self.scroll_widget)
-        self.grid_layout.setContentsMargins(8, 8, 8, 8)
-        self.grid_layout.setSpacing(10)
-        # Canh lề trên cùng và bên trái để các card không bị kéo dãn dọc
+        self.grid_layout.setContentsMargins(6, 6, 6, 6)
+        self.grid_layout.setSpacing(8)
         self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         self.scroll_area.setWidget(self.scroll_widget)
@@ -310,34 +319,50 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.ad_banner)
 
     def on_fps_slider_changed(self, value):
-        self.fps_value_label.setText(f"{value} FPS")
-        interval = max(33, int(1000 / value))
-        self.render_timer.setInterval(interval)
+        if value == 0:
+            self.fps_value_label.setText("0 FPS (Tạm dừng)")
+            self.render_timer.stop()
+        else:
+            self.fps_value_label.setText(f"{value} FPS")
+            interval = max(16, int(1000 / value))
+            self.render_timer.setInterval(interval)
+            if not self.render_timer.isActive():
+                self.render_timer.start()
+
+    def on_resolution_change(self):
+        text = self.res_combo.currentText()
+        val = self.res_options[text]
+        if val is None:
+            self.auto_scale = True
+        else:
+            self.auto_scale = False
+            self.fixed_w, self.fixed_h = val
+        self.update_card_dimensions()
 
     def on_columns_change(self):
         self.current_cols = self.col_combo.currentData()
         self.relayout_cards()
 
     def resizeEvent(self, event):
-        """Khi phóng to / thu nhỏ cửa sổ app, tính lại chiều rộng và ép chiều cao theo đúng tỉ lệ 640x360"""
         super().resizeEvent(event)
-        self.update_card_dimensions()
+        if self.auto_scale:
+            self.update_card_dimensions()
 
     def update_card_dimensions(self):
-        """Khóa cứng tỉ lệ chuẩn 640x360 (16:9): chiều cao = chiều rộng * 360 / 640"""
+        """Khóa chuẩn tỷ lệ 640x360 cho khung hình"""
         if not self.cards:
             return
 
-        viewport_w = self.scroll_area.viewport().width()
-        spacing = self.grid_layout.spacing()
-        margins = self.grid_layout.contentsMargins().left() + self.grid_layout.contentsMargins().right()
-        
-        # Tính chiều rộng khả dụng cho mỗi card
-        available_width = viewport_w - margins - ((self.current_cols - 1) * spacing) - 15
-        target_w = max(160, int(available_width / self.current_cols))
-        
-        # Chiều cao bắt buộc theo tỉ lệ 640x360:
-        target_h = int(target_w * 360 / 640)
+        if self.auto_scale:
+            viewport_w = self.scroll_area.viewport().width()
+            spacing = self.grid_layout.spacing()
+            margins = self.grid_layout.contentsMargins().left() + self.grid_layout.contentsMargins().right()
+            available_width = viewport_w - margins - ((self.current_cols - 1) * spacing) - 15
+            target_w = max(160, int(available_width / self.current_cols))
+            target_h = int(target_w * 360 / 640)
+        else:
+            target_w = self.fixed_w
+            target_h = self.fixed_h
 
         for card in self.cards.values():
             card.set_card_size(target_w, target_h)
@@ -394,7 +419,6 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Tìm thấy: {len(self.cards)} / 50 cửa sổ")
 
     def update_frames(self):
-        """Chỉ vẽ các card đang hiển thị trên màn hình"""
         if not self.isVisible() or self.isMinimized():
             return
             
