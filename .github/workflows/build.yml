@@ -11,22 +11,22 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Cai dat Python
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    - name: Cai dat thu vien
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PyQt5 PyQt5-Qt5 PyQt5-sip pywin32 pyinstaller
+        pip install PyQt5 pywin32 pyinstaller
 
-    - name: Dong goi thanh file EXE
+    - name: Build EXE with PyInstaller
       run: |
-        pyinstaller --onefile Mir4WallManager.py
+        pyinstaller --onefile --collect-all PyQt5 --collect-all win32gui --hidden-import win32timezone --hidden-import win32gui --hidden-import win32con Mir4WallManager.py
 
-    - name: Luu file EXE de tai ve
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Mir4WallManager-Debug
+        name: Mir4WallManager-EXE
         path: dist/Mir4WallManager.exe
