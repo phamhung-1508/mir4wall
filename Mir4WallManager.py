@@ -25,7 +25,7 @@ from PyQt5.QtGui import QImage, QPixmap
 
 
 def capture_window_pixmap(hwnd, target_w, target_h):
-    """Chụp trực tiếp bộ đệm đồ họa của cửa sổ game DirectX/Unreal Engine"""
+    """Chụp trực tiếp bộ đệm đồ họa và co giãn đúng tỉ lệ chuẩn 640x360 (16:9)"""
     try:
         if not win32gui.IsWindow(hwnd):
             return None
@@ -60,21 +60,22 @@ def capture_window_pixmap(hwnd, target_w, target_h):
         win32gui.ReleaseDC(hwnd, hwndDC)
 
         pixmap = QPixmap.fromImage(img)
-        return pixmap.scaled(target_w, target_h, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+        # Giữ chuẩn tỉ lệ gốc 640x360, không kéo méo ảnh
+        return pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.FastTransformation)
     except Exception:
         return None
 
 
 class ThumbnailCard(QFrame):
-    """Card hiển thị từng cửa sổ game, hỗ trợ tự co giãn"""
+    """Card hiển thị từng cửa sổ game"""
     def __init__(self, hwnd, title, index, parent=None):
         super().__init__(parent)
         self.hwnd = hwnd
         self.game_title = title
         self.index = index
-        self.last_pixmap = None
+        self.target_w = 320
+        self.target_h = 180
 
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet("""
             ThumbnailCard {
@@ -105,17 +106,20 @@ class ThumbnailCard(QFrame):
 
         # Khung chứa hình ảnh game
         self.image_label = QLabel()
-        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("background-color: #000000; border-radius: 2px;")
         layout.addWidget(self.image_label)
 
+    def set_card_size(self, width, height):
+        self.target_w = width
+        self.target_h = height
+        self.image_label.setFixedSize(self.target_w, self.target_h)
+        # Chiều cao tổng của card = chiều cao khung ảnh (tỉ lệ 640x360) + phần tiêu đề + padding
+        self.setFixedSize(self.target_w + 8, self.target_h + 30)
+
     def refresh_screen(self):
-        w = max(50, self.image_label.width())
-        h = max(30, self.image_label.height())
-        pixmap = capture_window_pixmap(self.hwnd, w, h)
+        pixmap = capture_window_pixmap(self.hwnd, self.target_w, self.target_h)
         if pixmap and not pixmap.isNull():
-            self.last_pixmap = pixmap
             self.image_label.setPixmap(pixmap)
 
     def mouseDoubleClickEvent(self, event):
@@ -249,9 +253,11 @@ class MainWindow(QMainWindow):
         self.grid_layout = QGridLayout(self.scroll_widget)
         self.grid_layout.setContentsMargins(8, 8, 8, 8)
         self.grid_layout.setSpacing(10)
+        # Canh lề trên cùng và bên trái để các card không bị kéo dãn dọc
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         self.scroll_area.setWidget(self.scroll_widget)
-        main_layout.addWidget(self.scroll_area, 1)  # Stretch factor = 1 để chiếm diện tích lớn nhất
+        main_layout.addWidget(self.scroll_area, 1)
 
         # ==================== BANNER QUẢNG CÁO PHÍA DƯỚI ====================
         self.ad_banner = QFrame()
@@ -266,7 +272,6 @@ class MainWindow(QMainWindow):
         ad_layout = QHBoxLayout(self.ad_banner)
         ad_layout.setContentsMargins(20, 5, 20, 5)
 
-        # Cột thông tin liên hệ bên trái
         contact_layout = QVBoxLayout()
         contact_layout.setSpacing(2)
         contact_layout.setAlignment(Qt.AlignVCenter)
@@ -286,7 +291,6 @@ class MainWindow(QMainWindow):
         ad_layout.addLayout(contact_layout)
         ad_layout.addStretch()
 
-        # Huy hiệu Buy / Sell Gold Mir4 nổi bật bên phải
         gold_badge = QLabel("BUY / SELL GOLD MIR4")
         gold_badge.setFixedHeight(46)
         gold_badge.setStyleSheet("""
@@ -307,7 +311,6 @@ class MainWindow(QMainWindow):
 
     def on_fps_slider_changed(self, value):
         self.fps_value_label.setText(f"{value} FPS")
-        # Tính khoảng thời gian theo mili-giây: ms = 1000 / FPS
         interval = max(33, int(1000 / value))
         self.render_timer.setInterval(interval)
 
@@ -316,21 +319,28 @@ class MainWindow(QMainWindow):
         self.relayout_cards()
 
     def resizeEvent(self, event):
-        """Tự động tính lại tỉ lệ kích thước card theo cửa sổ khi người dùng co kéo cửa sổ"""
+        """Khi phóng to / thu nhỏ cửa sổ app, tính lại chiều rộng và ép chiều cao theo đúng tỉ lệ 640x360"""
         super().resizeEvent(event)
         self.update_card_dimensions()
 
     def update_card_dimensions(self):
-        """Đảm bảo các card luôn giữ tỉ lệ 16:9 và lấp đầy khung hiển thị"""
+        """Khóa cứng tỉ lệ chuẩn 640x360 (16:9): chiều cao = chiều rộng * 360 / 640"""
         if not self.cards:
             return
-        # Lấy chiều rộng hiện có chia cho số cột
-        available_width = self.scroll_area.viewport().width() - (self.current_cols * 12) - 20
-        target_w = max(200, int(available_width / self.current_cols))
-        target_h = int(target_w * 9 / 16)
+
+        viewport_w = self.scroll_area.viewport().width()
+        spacing = self.grid_layout.spacing()
+        margins = self.grid_layout.contentsMargins().left() + self.grid_layout.contentsMargins().right()
+        
+        # Tính chiều rộng khả dụng cho mỗi card
+        available_width = viewport_w - margins - ((self.current_cols - 1) * spacing) - 15
+        target_w = max(160, int(available_width / self.current_cols))
+        
+        # Chiều cao bắt buộc theo tỉ lệ 640x360:
+        target_h = int(target_w * 360 / 640)
 
         for card in self.cards.values():
-            card.setMinimumSize(target_w, target_h + 28)
+            card.set_card_size(target_w, target_h)
 
     def relayout_cards(self):
         sorted_cards = sorted(self.cards.values(), key=lambda card: card.index)
@@ -384,7 +394,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Tìm thấy: {len(self.cards)} / 50 cửa sổ")
 
     def update_frames(self):
-        """Chỉ vẽ các ô đang trong tầm mắt cuộn để tối ưu hóa CPU tối đa"""
+        """Chỉ vẽ các card đang hiển thị trên màn hình"""
         if not self.isVisible() or self.isMinimized():
             return
             
