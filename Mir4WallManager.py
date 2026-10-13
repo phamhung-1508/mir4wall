@@ -21,19 +21,25 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QComboBox, QFrame, QSlider, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer, QRect
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QIcon
 
 
 def capture_window_pixmap(hwnd, target_w, target_h):
-    """Chụp trực tiếp bộ đệm đồ họa và co giãn đúng tỉ lệ chuẩn 640x360"""
+    """Chụp trực tiếp bộ đệm đồ họa của cửa sổ game và co giãn đúng tỉ lệ chuẩn 640x360"""
     try:
         if not win32gui.IsWindow(hwnd):
             return None
 
+        # Lấy kích thước thực tế vùng client của cửa sổ
         left, top, right, bot = win32gui.GetClientRect(hwnd)
         w = right - left
         h = bot - top
+
+        if w <= 0 or h <= 0:
+            rect = win32gui.GetWindowRect(hwnd)
+            w = rect[2] - rect[0]
+            h = rect[3] - rect[1]
 
         if w <= 0 or h <= 0:
             return None
@@ -46,8 +52,9 @@ def capture_window_pixmap(hwnd, target_w, target_h):
         saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
         saveDC.SelectObject(saveBitMap)
 
-        result = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 2)
-        if result == 0:
+        # Chụp bộ đệm đồ họa (thử cờ 2 trước, nếu lỗi chuyển sang cờ 0)
+        res = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 2)
+        if res == 0:
             ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 0)
 
         bmpinfo = saveBitMap.GetInfo()
@@ -67,7 +74,7 @@ def capture_window_pixmap(hwnd, target_w, target_h):
 
 
 class ThumbnailCard(QFrame):
-    """Card hiển thị trực tiếp toàn bộ màn hình game"""
+    """Card hiển thị trực tiếp toàn bộ màn hình game, không có thanh tiêu đề thừa"""
     def __init__(self, hwnd, title, index, parent=None):
         super().__init__(parent)
         self.hwnd = hwnd
@@ -184,7 +191,7 @@ class MainWindow(QMainWindow):
         self.refresh_btn.clicked.connect(self.scan_windows)
         toolbar.addWidget(self.refresh_btn)
 
-        # Lựa chọn Độ phân giải (Khôi phục lại trọn vẹn)
+        # Lựa chọn Độ phân giải
         toolbar.addWidget(QLabel("Độ phân giải:"))
         self.res_combo = QComboBox()
         self.res_combo.setFixedHeight(30)
@@ -419,17 +426,12 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Tìm thấy: {len(self.cards)} / 50 cửa sổ")
 
     def update_frames(self):
+        """Cập nhật trực tiếp tất cả các ô đang mở để loại bỏ hoàn toàn lỗi đen khung hình"""
         if not self.isVisible() or self.isMinimized():
             return
             
-        viewport_rect = self.scroll_area.viewport().rect()
         for card in self.cards.values():
-            card_geo = card.geometry()
-            top_left_in_vp = self.scroll_widget.mapTo(self.scroll_area.viewport(), card_geo.topLeft())
-            card_rect_in_vp = QRect(top_left_in_vp, card_geo.size())
-            
-            if viewport_rect.intersects(card_rect_in_vp):
-                card.refresh_screen()
+            card.refresh_screen()
 
 
 if __name__ == "__main__":
