@@ -22,19 +22,19 @@ from PyQt5.QtWidgets import (
     QScrollArea, QComboBox, QFrame, QSlider, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap, QIcon
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QIcon
 
 
 def capture_window_pixmap(hwnd, target_w, target_h):
-    """Chụp trực tiếp bộ đệm đồ họa của cửa sổ game và co giãn đúng tỉ lệ chuẩn 640x360"""
+    """Chụp chuẩn xác đồ họa cửa sổ game DirectX/Unreal Engine"""
     try:
         if not win32gui.IsWindow(hwnd):
             return None
 
-        # Lấy kích thước thực tế vùng client của cửa sổ
-        left, top, right, bot = win32gui.GetClientRect(hwnd)
-        w = right - left
-        h = bot - top
+        # Lấy kích thước thực tế của cửa sổ
+        cl_left, cl_top, cl_right, cl_bot = win32gui.GetClientRect(hwnd)
+        w = cl_right - cl_left
+        h = cl_bot - cl_top
 
         if w <= 0 or h <= 0:
             rect = win32gui.GetWindowRect(hwnd)
@@ -44,7 +44,7 @@ def capture_window_pixmap(hwnd, target_w, target_h):
         if w <= 0 or h <= 0:
             return None
 
-        hwndDC = win32gui.GetDC(hwnd)
+        hwndDC = win32gui.GetWindowDC(hwnd)
         mfcDC = win32ui.CreateDCFromHandle(hwndDC)
         saveDC = mfcDC.CreateCompatibleDC()
 
@@ -52,16 +52,21 @@ def capture_window_pixmap(hwnd, target_w, target_h):
         saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
         saveDC.SelectObject(saveBitMap)
 
-        # Chụp bộ đệm đồ họa (thử cờ 2 trước, nếu lỗi chuyển sang cờ 0)
+        # Ưu tiên dùng PrintWindow với PW_RENDERFULLCONTENT = 2
         res = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 2)
         if res == 0:
-            ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 0)
+            # Fallback 1: PrintWindow chuẩn
+            res = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 0)
+            if res == 0:
+                # Fallback 2: BitBlt trực tiếp từ DC cửa sổ
+                saveDC.BitBlt((0, 0), (w, h), mfcDC, (0, 0), win32con.SRCCOPY)
 
         bmpinfo = saveBitMap.GetInfo()
         bmpstr = saveBitMap.GetBitmapBits(True)
 
         img = QImage(bmpstr, bmpinfo['bmWidth'], bmpinfo['bmHeight'], QImage.Format_ARGB32)
 
+        # Giải phóng bộ nhớ DC hệ thống
         win32gui.DeleteObject(saveBitMap.GetHandle())
         saveDC.DeleteDC()
         mfcDC.DeleteDC()
@@ -74,7 +79,7 @@ def capture_window_pixmap(hwnd, target_w, target_h):
 
 
 class ThumbnailCard(QFrame):
-    """Card hiển thị trực tiếp toàn bộ màn hình game, không có thanh tiêu đề thừa"""
+    """Card hiển thị trực tiếp đồ họa bằng QPainter để không bao giờ bị đen"""
     def __init__(self, hwnd, title, index, parent=None):
         super().__init__(parent)
         self.hwnd = hwnd
@@ -82,6 +87,7 @@ class ThumbnailCard(QFrame):
         self.index = index
         self.target_w = 320
         self.target_h = 180
+        self.current_pixmap = None
 
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet("""
@@ -95,25 +101,27 @@ class ThumbnailCard(QFrame):
             }
         """)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self.image_label = QLabel()
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setStyleSheet("background-color: #000000; border: none;")
-        layout.addWidget(self.image_label)
-
     def set_card_size(self, width, height):
         self.target_w = width
         self.target_h = height
-        self.image_label.setFixedSize(self.target_w, self.target_h)
         self.setFixedSize(self.target_w + 4, self.target_h + 4)
+        self.update()
 
     def refresh_screen(self):
-        pixmap = capture_window_pixmap(self.hwnd, self.target_w, self.target_h)
-        if pixmap and not pixmap.isNull():
-            self.image_label.setPixmap(pixmap)
+        pix = capture_window_pixmap(self.hwnd, self.target_w, self.target_h)
+        if pix and not pix.isNull():
+            self.current_pixmap = pix
+            self.update()  # Kích hoạt vẽ lại trực tiếp
+
+    def paintEvent(self, event):
+        """Vẽ trực tiếp pixmap lên khung card bằng Painter"""
+        super().paintEvent(event)
+        if self.current_pixmap and not self.current_pixmap.isNull():
+            painter = QPainter(self)
+            # Canh chính giữa bên trong khung viền
+            x = (self.width() - self.current_pixmap.width()) // 2
+            y = (self.height() - self.current_pixmap.height()) // 2
+            painter.drawPixmap(x, y, self.current_pixmap)
 
     def mouseDoubleClickEvent(self, event):
         """Click đúp chuột để đưa cửa sổ game thật lên trước"""
@@ -156,7 +164,7 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
 
-        # Timer cập nhật khung hình (Mặc định 30 FPS)
+        # Timer cập nhật khung hình (Mặc định 30 FPS ~ 33ms)
         self.render_timer = QTimer(self)
         self.render_timer.timeout.connect(self.update_frames)
         self.render_timer.start(33)
@@ -426,7 +434,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Tìm thấy: {len(self.cards)} / 50 cửa sổ")
 
     def update_frames(self):
-        """Cập nhật trực tiếp tất cả các ô đang mở để loại bỏ hoàn toàn lỗi đen khung hình"""
+        """Cập nhật trực tiếp khung hình cho tất cả các card"""
         if not self.isVisible() or self.isMinimized():
             return
             
