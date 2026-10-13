@@ -2,22 +2,27 @@ import sys
 import re
 import ctypes
 from ctypes import wintypes
-import traceback
+import win32gui
+import win32con
+import win32console
+
+# 1. ẨN NGAY CỬA SỔ CMD KHI VỪA KHỞI CHẠY
+try:
+    hwnd_console = win32console.GetConsoleWindow()
+    if hwnd_console:
+        win32gui.ShowWindow(hwnd_console, win32con.SW_HIDE)
+except Exception:
+    pass
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, 
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QComboBox, QFrame
 )
-from PyQt5.QtCore import Qt, QTimer
-import win32gui
-import win32con
+from PyQt5.QtCore import Qt, QTimer, QPoint
 
-# Nạp thư viện DWM của Windows
-try:
-    dwmapi = ctypes.WinDLL("dwmapi")
-except Exception:
-    dwmapi = None
+# Nạp Windows DWM Thumbnail API
+dwmapi = ctypes.WinDLL("dwmapi")
 
 class RECT(ctypes.Structure):
     _fields_ = [
@@ -39,10 +44,12 @@ class DWM_THUMBNAIL_PROPERTIES(ctypes.Structure):
 
 DWM_TNP_RECTTARGET = 0x00000002
 DWM_TNP_VISIBLE = 0x00000008
+DWM_TNP_OPACITY = 0x00000004
 DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010
 
 
 class ThumbnailCard(QFrame):
+    """Thẻ chứa thông tin và vị trí placeholder cho 1 cửa sổ game"""
     def __init__(self, hwnd, title, index, thumb_w, thumb_h, parent=None):
         super().__init__(parent)
         self.hwnd = hwnd
@@ -55,7 +62,7 @@ class ThumbnailCard(QFrame):
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet("""
             ThumbnailCard {
-                background-color: #1f1f23;
+                background-color: #1a1a1e;
                 border: 2px solid #38383e;
                 border-radius: 6px;
             }
@@ -68,6 +75,7 @@ class ThumbnailCard(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
 
+        # Thanh tiêu đề thẻ
         self.header_label = QLabel(f" {self.game_title} ")
         self.header_label.setFixedHeight(22)
         self.header_label.setStyleSheet("""
@@ -79,45 +87,19 @@ class ThumbnailCard(QFrame):
         """)
         layout.addWidget(self.header_label)
 
-        self.thumb_area = QWidget()
-        self.thumb_area.setFixedSize(self.thumb_w, self.thumb_h)
-        self.thumb_area.setStyleSheet("background-color: #000000;")
-        layout.addWidget(self.thumb_area)
+        # Vùng chừa chỗ cho DWM vẽ đè lên
+        self.screen_placeholder = QWidget()
+        self.screen_placeholder.setFixedSize(self.thumb_w, self.thumb_h)
+        self.screen_placeholder.setStyleSheet("background-color: #000000;")
+        layout.addWidget(self.screen_placeholder)
 
     def set_display_size(self, width, height):
         self.thumb_w = width
         self.thumb_h = height
-        self.thumb_area.setFixedSize(self.thumb_w, self.thumb_h)
-        self.update_thumbnail_position()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.register_thumbnail()
-
-    def register_thumbnail(self):
-        if not dwmapi or self.thumb_id:
-            return
-        try:
-            dest_hwnd = int(self.thumb_area.winId())
-            hr = dwmapi.DwmRegisterThumbnail(dest_hwnd, self.hwnd, ctypes.byref(self.thumb_id))
-            if hr == 0:
-                self.update_thumbnail_position()
-        except Exception:
-            pass
-
-    def update_thumbnail_position(self):
-        if dwmapi and self.thumb_id:
-            try:
-                props = DWM_THUMBNAIL_PROPERTIES()
-                props.dwFlags = DWM_TNP_RECTTARGET | DWM_TNP_VISIBLE | DWM_TNP_SOURCECLIENTAREAONLY
-                props.fVisible = True
-                props.fSourceClientAreaOnly = True
-                props.rcTarget = RECT(0, 0, self.thumb_w, self.thumb_h)
-                dwmapi.DwmUpdateThumbnailProperties(self.thumb_id, ctypes.byref(props))
-            except Exception:
-                pass
+        self.screen_placeholder.setFixedSize(self.thumb_w, self.thumb_h)
 
     def mouseDoubleClickEvent(self, event):
+        """Click đúp chuột để đưa cửa sổ game thật lên tương tác"""
         if event.button() == Qt.LeftButton:
             self.activate_window()
 
@@ -138,24 +120,12 @@ class ThumbnailCard(QFrame):
             except Exception:
                 pass
 
-    def closeEvent(self, event):
-        self.unregister_thumbnail()
-        super().closeEvent(event)
-
-    def unregister_thumbnail(self):
-        if dwmapi and self.thumb_id:
-            try:
-                dwmapi.DwmUnregisterThumbnail(self.thumb_id)
-            except Exception:
-                pass
-            self.thumb_id = None
-
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mir4 Window Wall Manager [Mir4G 1-50]")
-        self.resize(1280, 720)
+        self.resize(1340, 750)
         self.setStyleSheet("background-color: #121214; color: #ececed;")
 
         self.current_w = 320
@@ -165,11 +135,16 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
 
-        self.auto_refresh_timer = QTimer(self)
-        self.auto_refresh_timer.timeout.connect(self.scan_windows)
-        self.auto_refresh_timer.start(4000)
+        # Timer liên tục cập nhật vị trí thumbnail và quét cửa sổ mới
+        self.sync_timer = QTimer(self)
+        self.sync_timer.timeout.connect(self.update_all_thumbnails)
+        self.sync_timer.start(50)  # Cập nhật mượt mà khi cuộn hoặc co giãn
 
-        self.scan_windows()
+        self.scan_timer = QTimer(self)
+        self.scan_timer.timeout.connect(self.scan_windows)
+        self.scan_timer.start(3000)
+
+        QTimer.singleShot(200, self.scan_windows)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -178,6 +153,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
+        # Toolbar
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
 
@@ -228,9 +204,12 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(toolbar)
 
+        # Khu vực cuộn
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet("QScrollArea { border: 1px solid #292930; background-color: #121214; }")
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self.update_all_thumbnails)
+        self.scroll_area.horizontalScrollBar().valueChanged.connect(self.update_all_thumbnails)
 
         self.scroll_widget = QWidget()
         self.grid_layout = QGridLayout(self.scroll_widget)
@@ -247,6 +226,7 @@ class MainWindow(QMainWindow):
         self.current_w, self.current_h = w, h
         for card in self.cards.values():
             card.set_display_size(w, h)
+        self.update_all_thumbnails()
 
     def on_columns_change(self):
         self.current_cols = self.col_combo.currentData()
@@ -258,6 +238,7 @@ class MainWindow(QMainWindow):
             r = idx // self.current_cols
             c = idx % self.current_cols
             self.grid_layout.addWidget(card, r, c)
+        self.update_all_thumbnails()
 
     def scan_windows(self):
         found_windows = []
@@ -284,33 +265,99 @@ class MainWindow(QMainWindow):
         found_windows.sort(key=lambda x: x[0])
         current_hwnds = {hwnd for _, hwnd, _ in found_windows}
 
+        # Dọn dẹp card của cửa sổ đã tắt
         for hwnd in list(self.cards.keys()):
             if hwnd not in current_hwnds:
                 card = self.cards.pop(hwnd)
-                card.unregister_thumbnail()
+                if card.thumb_id:
+                    dwmapi.DwmUnregisterThumbnail(card.thumb_id)
                 card.setParent(None)
                 card.deleteLater()
 
+        # Thêm card mới
+        main_hwnd = int(self.winId())
         needs_relayout = False
+
         for idx, hwnd, title in found_windows:
             if hwnd not in self.cards:
                 card = ThumbnailCard(hwnd, title, idx, self.current_w, self.current_h)
+                # Đăng ký trực tiếp với Top-Level MainWindow
+                hr = dwmapi.DwmRegisterThumbnail(main_hwnd, hwnd, ctypes.byref(card.thumb_id))
                 self.cards[hwnd] = card
                 needs_relayout = True
 
-        if needs_relayout or len(self.cards) != self.grid_layout.count():
+        if needs_relayout:
             self.relayout_cards()
 
         self.status_label.setText(f"Tìm thấy: {len(self.cards)} / 50 cửa sổ")
+        self.update_all_thumbnails()
+
+    def update_all_thumbnails(self):
+        """Chiếu hình ảnh từng game chính xác vào ô màn hình tương ứng trên cửa sổ chính"""
+        if not self.isVisible():
+            return
+
+        viewport = self.scroll_area.viewport()
+        vp_top_left = viewport.mapTo(self, QPoint(0, 0))
+        vp_rect = RECT(
+            vp_top_left.x(),
+            vp_top_left.y(),
+            vp_top_left.x() + viewport.width(),
+            vp_top_left.y() + viewport.height()
+        )
+
+        for card in self.cards.values():
+            if not card.thumb_id:
+                continue
+
+            # Tính tọa độ của vùng màn hình con đối với cửa sổ chính MainWindow
+            screen_pos = card.screen_placeholder.mapTo(self, QPoint(0, 0))
+            left = screen_pos.x()
+            top = screen_pos.y()
+            right = left + card.thumb_w
+            bottom = top + card.thumb_h
+
+            props = DWM_THUMBNAIL_PROPERTIES()
+            
+            # Kiểm tra nếu ô màn hình bị cuộn ra khỏi vùng nhìn thấy
+            if right < vp_rect.left or left > vp_rect.right or bottom < vp_rect.top or top > vp_rect.bottom:
+                props.dwFlags = DWM_TNP_VISIBLE
+                props.fVisible = False
+            else:
+                # Cắt bớt phần hiển thị nếu card bị cuộn dở dang
+                clamped_left = max(left, vp_rect.left)
+                clamped_top = max(top, vp_rect.top)
+                clamped_right = min(right, vp_rect.right)
+                clamped_bottom = min(bottom, vp_rect.bottom)
+
+                props.dwFlags = (
+                    DWM_TNP_RECTTARGET | 
+                    DWM_TNP_VISIBLE | 
+                    DWM_TNP_OPACITY | 
+                    DWM_TNP_SOURCECLIENTAREAONLY
+                )
+                props.fVisible = True
+                props.opacity = 255
+                props.fSourceClientAreaOnly = True
+                props.rcTarget = RECT(clamped_left, clamped_top, clamped_right, clamped_bottom)
+
+            try:
+                dwmapi.DwmUpdateThumbnailProperties(card.thumb_id, ctypes.byref(props))
+            except Exception:
+                pass
+
+    def closeEvent(self, event):
+        for card in self.cards.values():
+            if card.thumb_id:
+                try:
+                    dwmapi.DwmUnregisterThumbnail(card.thumb_id)
+                except Exception:
+                    pass
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
-    try:
-        app = QApplication(sys.argv)
-        window = MainWindow()
-        window.show()
-        sys.exit(app.exec_())
-    except Exception as e:
-        print("\n=== CO LOI XAY RA KHI KHOI DONG ===")
-        traceback.print_exc()
-        input("\nNhan phim Enter de thoat...")
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
