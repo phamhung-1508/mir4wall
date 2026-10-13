@@ -207,3 +207,14 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(QLabel("Độ phân giải:"))
         self.res_combo = QComboBox()
         self.res_combo.setFixedHeight(30)
+if __name__ == "__main__":
+    try:
+        app = QApplication(sys.argv)
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec_())
+    except Exception as e:
+        import traceback
+        print("\n=== CO LOI XAY RA KHI KHOI DONG ===")
+        traceback.print_exc()
+        input("\nNhan phim Enter de thoat...")
