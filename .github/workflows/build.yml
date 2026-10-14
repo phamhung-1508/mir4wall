@@ -1,4 +1,4 @@
-name: Build Mir4 Windows EXE
+name: Build GameBootloader EXE
 
 on:
   workflow_dispatch:
@@ -8,25 +8,25 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout code
+    - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    - name: Install dependencies
+    - name: Install Libraries
       run: |
         python -m pip install --upgrade pip
-        pip install PyQt5 pywin32 pyinstaller
+        pip install PyQt5 psutil pywin32 pyinstaller
 
-    - name: Build EXE with PyInstaller
+    - name: Build Standalone EXE
       run: |
-        pyinstaller --onefile --collect-all PyQt5 --collect-all win32gui --hidden-import win32timezone --hidden-import win32gui --hidden-import win32con Mir4WallManager.py
+        pyinstaller --onefile --noconsole --collect-all PyQt5 --collect-all win32gui --collect-all win32ui --hidden-import=win32timezone --name="GameBootloader" "AUTO START QT vs TINKER.py"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Mir4WallManager-EXE
-        path: dist/Mir4WallManager.exe
+        name: GameBootloader-EXE
+        path: dist/GameBootloader.exe
