@@ -3,6 +3,7 @@ import os
 import re
 import json
 import subprocess
+import time
 import winreg
 import ctypes
 import psutil
@@ -30,7 +31,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QIcon
 
-# Xác định đường dẫn file cấu hình nằm vĩnh viễn cùng thư mục file .exe
 def get_base_dir():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
@@ -41,7 +41,7 @@ REG_STARTUP_KEY = "Mir4_Master_Hub_PhamHung"
 
 
 def is_process_running(exe_path):
-    """Kiểm tra tiến trình đang chạy theo đường dẫn tuyệt đối hoặc tên file"""
+    """Kiểm tra tiến trình đang chạy an toàn"""
     if not exe_path or not os.path.exists(exe_path):
         return False
     target_abs = os.path.abspath(exe_path).lower()
@@ -94,7 +94,7 @@ def launch_like_desktop(exe_path):
     abs_path = os.path.abspath(exe_path)
     working_dir = os.path.dirname(abs_path)
 
-    # Cách 1: os.startfile (Windows Shell Execute giống nhấp đúp chuột)
+    # 1. os.startfile (Chuẩn nhất của Windows)
     try:
         os.chdir(working_dir)
         os.startfile(abs_path)
@@ -102,7 +102,7 @@ def launch_like_desktop(exe_path):
     except Exception:
         pass
 
-    # Cách 2: ShellExecuteW
+    # 2. ShellExecuteW
     try:
         ret = ctypes.windll.shell32.ShellExecuteW(None, "open", abs_path, None, working_dir, 1)
         if ret > 32:
@@ -110,7 +110,7 @@ def launch_like_desktop(exe_path):
     except Exception:
         pass
 
-    # Cách 3: Subprocess
+    # 3. Subprocess
     try:
         subprocess.Popen([abs_path], cwd=working_dir, shell=False)
         return True
@@ -147,7 +147,6 @@ def capture_window_pixmap(hwnd, target_w, target_h):
         saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
         saveDC.SelectObject(saveBitMap)
 
-        # Chế độ bắt hình ưu tiên PW_RENDERFULLCONTENT = 2
         res = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 2)
         if res == 0:
             res = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 0)
@@ -234,7 +233,7 @@ class ThumbnailCard(QFrame):
 
 
 # ==========================================================
-#                   CỬA SỔ CHÍNH HUB
+#                   CỬA SỔ CHÍNH MASTER APP
 # ==========================================================
 
 class MasterApp(QMainWindow):
@@ -264,19 +263,19 @@ class MasterApp(QMainWindow):
         if os.path.exists("app_icon.ico"):
             self.setWindowIcon(QIcon("app_icon.ico"))
 
-        # Cấu hình lưu trữ
+        # Cấu hình lưu trữ mặc định
         self.config = {
             "qt_path": "",
             "tinker_path": "",
             "other_path": "",
             "auto_start_tools": True,
-            "auto_recover_crash": True,
-            "auto_boot_windows": False
+            "auto_recover_crash": True
         }
         self.load_config()
 
-        # Biến điều khiển Watchdog
+        # Biến điều khiển Watchdog và Cooldown chống spam
         self.is_waiting_30s = False
+        self.last_launch_time = {}
 
         # Biến điều khiển Wall Manager
         self.current_cols = 4
@@ -645,7 +644,9 @@ class MasterApp(QMainWindow):
         if os.path.exists(CONFIG_PATH):
             try:
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                    self.config.update(json.load(f))
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        self.config.update(data)
             except Exception:
                 pass
 
@@ -696,9 +697,10 @@ class MasterApp(QMainWindow):
             return
 
         if launch_like_desktop(path):
+            self.last_launch_time[name] = time.time()
             self.status_boot_label.setText(f"Khởi chạy {name} thành công.")
             QMessageBox.information(self, "Thành công", f"Khởi chạy {name} thành công!")
-            QTimer.singleShot(1000, self.check_app_status_ui)
+            QTimer.singleShot(1500, self.check_app_status_ui)
         else:
             QMessageBox.critical(self, "Lỗi", f"Không thể khởi động file {name}!")
 
@@ -712,6 +714,7 @@ class MasterApp(QMainWindow):
         if qt_path and os.path.exists(qt_path):
             if not is_process_running(qt_path):
                 launch_like_desktop(qt_path)
+                self.last_launch_time["QT"] = time.time()
                 self.status_boot_label.setText("Đã bật QT. Đang đếm lùi 30 giây để bật TINKER và Tool Khác...")
             else:
                 self.status_boot_label.setText("QT đã hoạt động. Chờ 30 giây kích hoạt 2 tool còn lại...")
@@ -729,16 +732,18 @@ class MasterApp(QMainWindow):
             launched_names = []
             if tinker_path and os.path.exists(tinker_path) and not is_process_running(tinker_path):
                 launch_like_desktop(tinker_path)
+                self.last_launch_time["TINKER"] = time.time()
                 launched_names.append("TINKER")
 
             if other_path and os.path.exists(other_path) and not is_process_running(other_path):
                 launch_like_desktop(other_path)
+                self.last_launch_time["Tool Khác"] = time.time()
                 launched_names.append("Tool Khác")
 
             if launched_names:
                 msg = f"Đã khởi chạy: {', '.join(launched_names)} sau 30 giây!"
             else:
-                msg = "Hoàn tất kiểm tra 30 giây. Các tool đã ở trạng thái chạy!"
+                msg = "Hoàn tất chu kỳ 30 giây. Các tool đã ở trạng thái chạy!"
             self.status_boot_label.setText(msg)
             self.check_app_status_ui()
 
@@ -772,10 +777,11 @@ class MasterApp(QMainWindow):
             QMessageBox.information(self, "Thông báo", "Hiện tại không có tool nào đang chạy!")
 
     def watchdog_check_and_recover(self):
-        """Tự động kiểm tra và mở lại tool nếu bị tắt (Watchdog)"""
+        """Tự động kiểm tra và mở lại tool nếu bị tắt (Kèm Cooldown chống mở đè)"""
         if self.is_waiting_30s or not self.chk_auto_recover.isChecked():
             return
 
+        now = time.time()
         for path, name, badge in [
             (self.txt_qt.text().strip(), "QT", self.badge_qt),
             (self.txt_tinker.text().strip(), "TINKER", self.badge_tinker),
@@ -783,9 +789,12 @@ class MasterApp(QMainWindow):
         ]:
             if path and os.path.exists(path):
                 if not is_process_running(path):
-                    self.update_badge_ui(badge, False, is_warning=True, warning_text="BỊ TẮT! ĐANG MỞ LẠI...")
-                    self.status_boot_label.setText(f"Cảnh báo: Phát hiện {name} bị tắt! Đang tự động mở lại...")
-                    launch_like_desktop(path)
+                    # Cooldown 15s tránh spam mở lại liên tục khi app đang load
+                    if now - self.last_launch_time.get(name, 0) > 15:
+                        self.update_badge_ui(badge, False, is_warning=True, warning_text="BỊ TẮT! ĐANG MỞ LẠI...")
+                        self.status_boot_label.setText(f"Cảnh báo: Phát hiện {name} bị tắt! Đang tự động mở lại...")
+                        launch_like_desktop(path)
+                        self.last_launch_time[name] = now
 
     # ================= KHỞI ĐỘNG CÙNG WINDOWS =================
 
@@ -805,15 +814,15 @@ class MasterApp(QMainWindow):
             return False
 
     def toggle_windows_startup(self, state):
-        exe_path = os.path.abspath(get_base_dir())
         target_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        target_dir = os.path.dirname(os.path.abspath(target_exe))
         bat_file = self.get_startup_bat_path()
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
         if state == Qt.Checked:
             try:
                 with open(bat_file, "w", encoding="utf-8") as f:
-                    f.write(f'@echo off\nstart "" "{target_exe}"\n')
+                    f.write(f'@echo off\ncd /d "{target_dir}"\nstart "" "{target_exe}"\n')
             except Exception:
                 pass
 
@@ -824,7 +833,7 @@ class MasterApp(QMainWindow):
             except Exception:
                 pass
 
-            self.status_boot_label.setText("Đã bật tự khởi động Hub cùng Windows.")
+            self.status_boot_label.setText("Đã kích hoạt tự khởi động Hub cùng Windows.")
         else:
             if os.path.exists(bat_file):
                 try:
@@ -983,7 +992,7 @@ class MasterApp(QMainWindow):
 
 
 # ==========================================================
-#                   ĐIỂM KHỞI CHẠY CHÍNH (MAIN)
+#                   ĐIỂM KHỞI CHẠY (MAIN)
 # ==========================================================
 
 if __name__ == "__main__":
