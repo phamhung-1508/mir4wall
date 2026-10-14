@@ -22,8 +22,30 @@ jobs:
         pip install PyQt5 psutil pywin32 pyinstaller
 
     - name: Build Standalone EXE
+      shell: pwsh
       run: |
-        pyinstaller --onefile --noconsole --collect-all PyQt5 --collect-all win32gui --collect-all win32ui --hidden-import=win32timezone --name="GameBootloader" "AUTO START QT vs TINKER.py"
+        # Tìm file code python chính trong repo
+        $targetFile = Get-ChildItem -Filter "*.py" | Where-Object { $_.Name -like "*QT*" -or $_.Name -like "*Bootloader*" } | Select-Object -First 1
+        
+        if (-not $targetFile) {$targetFile = Get-ChildItem -Filter "*.py" | Select-Object -First 1
+        }
+
+        Write-Host "Dang dong goi file: $($targetFile.Name)"
+
+        # Kiem tra icon hop le
+        $iconArg = ""
+        if (Test-Path "app_icon.ico") {
+            $iconArg = "--icon=app_icon.ico"
+        }
+
+        # Chay dong goi PyInstaller
+        pyinstaller --onefile --noconsole $iconArg `
+          --collect-all PyQt5 `
+          --collect-all win32gui `
+          --collect-all win32ui `
+          --hidden-import=win32timezone `
+          --name="GameBootloader" `
+          "$($targetFile.FullName)"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
